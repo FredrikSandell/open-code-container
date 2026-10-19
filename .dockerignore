@@ -1,0 +1,5 @@
+.git
+.env
+secrets
+k8s
+README.md

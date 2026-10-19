@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Hook dispatcher. Every hook name in this directory links here, and the
+# entrypoint forces core.hooksPath to this directory via GIT_CONFIG_* so it
+# wins over a repository's own setting. We run our guard first, then hand
+# off to the repository's hook (its core.hooksPath, else .git/hooks), so
+# husky and friends keep working.
+set -euo pipefail
+
+hook=$(basename "$0")
+self_dir=$(cd "$(dirname "$0")" && pwd)
+
+stdin=
+if [[ $hook == pre-push ]]; then
+  stdin=$(cat; echo x)
+  stdin=${stdin%x}
+  printf '%s' "$stdin" | /opt/occ/bin/occ-push-guard "$@"
+fi
+
+repo_hooks=$(git config --local --get core.hooksPath 2>/dev/null || true)
+repo_hooks=${repo_hooks:-$(git rev-parse --git-common-dir)/hooks}
+target=$repo_hooks/$hook
+[[ -x $target ]] || exit 0
+[[ $(cd "$(dirname "$target")" && pwd) == "$self_dir" ]] && exit 0
+
+if [[ $hook == pre-push ]]; then
+  printf '%s' "$stdin" | "$target" "$@"
+else
+  exec "$target" "$@"
+fi

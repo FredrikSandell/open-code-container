@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: opencode-home
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opencode-config
+data:
+  GHES_HOST: ghes.example.com
+  GHAPP_READ_ID: "12"
+  GHAPP_WRITE_ID: "34"
+  AGENT_BRANCH_PREFIX: agent/
+  OPENCODE_SERVER_USERNAME: opencode
+  # GHAPP_DEFAULT_OWNER: my-org
+  # OPENCODE_DISABLE_MODELS_FETCH: "1"   # if models.opencode.ai is unreachable
+  # OPENCODE_CONFIG_CONTENT: '{"model":"github-copilot/gpt-5.4"}'
+  # HTTPS_PROXY / NO_PROXY if egress goes through a proxy
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opencode
+spec:
+  selector:
+    app.kubernetes.io/name: opencode
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: opencode
+  annotations:
+    # The UI and `opencode attach` hold long-lived event streams.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-body-size: 50m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [opencode.example.com]
+      secretName: opencode-tls
+  rules:
+    - host: opencode.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: opencode
+                port:
+                  name: http

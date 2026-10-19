@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencode
+  labels:
+    app.kubernetes.io/name: opencode
+spec:
+  replicas: 1 # single instance: opencode keeps state in SQLite on the PVC
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opencode
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opencode
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: opencode
+          image: open-code-container:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 4096
+          envFrom:
+            - configMapRef:
+                name: opencode-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: home
+              mountPath: /home/opencode
+            - name: tmp
+              mountPath: /tmp
+            - name: secrets
+              mountPath: /run/secrets/occ
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["/opt/occ/bin/occ-healthcheck"]
+            periodSeconds: 10
+            timeoutSeconds: 8
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 4Gi
+      volumes:
+        - name: home
+          persistentVolumeClaim:
+            claimName: opencode-home
+        - name: tmp
+          emptyDir: {}
+        - name: secrets
+          secret:
+            secretName: opencode-secrets
+            defaultMode: 0440

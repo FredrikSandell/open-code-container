@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Liveness/readiness check: the server's health endpoint, with basic auth.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. /opt/occ/lib/common.sh
+
+password=$(occ_secret OPENCODE_SERVER_PASSWORD server-password)
+curl -fsS -o /dev/null --max-time 5 \
+  ${password:+-u "${OPENCODE_SERVER_USERNAME:-opencode}:$password"} \
+  "http://127.0.0.1:${OCC_PORT:-4096}/global/health"

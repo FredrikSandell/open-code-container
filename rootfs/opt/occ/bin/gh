@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Wrapper around gh that authenticates against GHES with a GitHub App token.
+#
+# Read-only commands (list, view, diff, GET api calls, ...) use the read app;
+# everything else uses the write app. Set GHAPP_ROLE=read|write to override.
+# The owner comes from -R/--repo, GH_REPO, the api path, the origin remote,
+# or GHAPP_DEFAULT_OWNER, in that order.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. /opt/occ/lib/common.sh
+
+real=/usr/bin/gh
+[[ -n ${GHES_HOST:-} ]] || exec "$real" "$@"
+
+case ${1:-} in
+  "" | -* | help | auth | alias | completion | config | extension | version | ext)
+    exec "$real" "$@" ;;
+esac
+
+args=("$@")
+repo=${GH_REPO:-}
+method=
+fields=false
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case ${args[i]} in
+    -R | --repo) repo=${args[i + 1]:-} ;;
+    --repo=*) repo=${args[i]#--repo=} ;;
+    -X | --method) method=${args[i + 1]:-} ;;
+    --method=*) method=${args[i]#--method=} ;;
+    -f | -F | --field | --raw-field | --input | --field=* | --raw-field=* | --input=*) fields=true ;;
+  esac
+done
+
+classify() {
+  if [[ $1 == api ]]; then
+    if [[ ${2:-} == graphql ]]; then
+      [[ " ${args[*]} " == *mutation* ]] && echo write || echo read
+    elif [[ -n $method ]]; then
+      [[ ${method^^} == GET ]] && echo read || echo write
+    else
+      $fields && echo write || echo read
+    fi
+    return
+  fi
+  case $1 in
+    search | status | browse) echo read; return ;;
+  esac
+  case ${2:-} in
+    list | ls | view | status | diff | checks | download | watch | clone | checkout) echo read ;;
+    *) echo write ;;
+  esac
+}
+
+owner_from_api_path() {
+  local a
+  for a in "${args[@]:1}"; do
+    if [[ $a =~ ^/?(repos|orgs|users)/([^/?]+) ]]; then
+      [[ ${BASH_REMATCH[2]} == "{owner}" ]] && continue
+      printf '%s' "${BASH_REMATCH[2]}"
+      return
+    fi
+  done
+}
+
+role=${GHAPP_ROLE:-$(classify "$@")}
+
+owner=
+if [[ -n $repo ]]; then
+  repo=${repo#https://}
+  repo=${repo#"$GHES_HOST"/}
+  owner=${repo%%/*}
+fi
+[[ -z $owner && $1 == api ]] && owner=$(owner_from_api_path)
+if [[ -z $owner ]]; then
+  origin=$(git remote get-url origin 2>/dev/null || true)
+  [[ -n $origin && $(occ_url_host "$origin") == "$GHES_HOST" ]] && owner=$(occ_url_owner "$origin")
+fi
+owner=${owner:-${GHAPP_DEFAULT_OWNER:-}}
+[[ -n $owner ]] || occ_die "gh: cannot tell which owner to authenticate for; pass -R owner/repo or set GHAPP_DEFAULT_OWNER"
+
+token=$(/opt/occ/bin/ghapp-token "$role" "$owner")
+unset GH_TOKEN GITHUB_TOKEN
+export GH_HOST=$GHES_HOST GH_ENTERPRISE_TOKEN=$token
+exec "$real" "$@"

@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: opencode
+resources:
+  - resources.yaml
+  - deployment.yaml
+# The Secret is created out of band (see README), e.g.:
+#   kubectl -n opencode create secret generic opencode-secrets \
+#     --from-file=server-password=secrets/server-password \
+#     --from-file=copilot-token=secrets/copilot-token \
+#     --from-file=ghapp-read.pem=secrets/ghapp-read.pem \
+#     --from-file=ghapp-write.pem=secrets/ghapp-write.pem \
+#     [--from-file=ca.crt=secrets/ca.crt]
+images:
+  - name: open-code-container
+    newName: registry.example.com/open-code-container
+    newTag: dev

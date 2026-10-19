@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# pre-push guard: pushes to the GHES host may only update branches under
+# $AGENT_BRANCH_PREFIX (default "agent/"). An empty prefix disables it.
+# Called by the hook dispatcher with the pre-push arguments and stdin.
+#
+# This is a guardrail, not a security boundary: enforce the same rule with a
+# GHES ruleset that the write app cannot bypass.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. /opt/occ/lib/common.sh
+
+prefix=${AGENT_BRANCH_PREFIX-agent/}
+url=${2:-}
+[[ -n $prefix && $(occ_url_host "$url") == "${GHES_HOST:-}" ]] || { cat > /dev/null; exit 0; }
+
+status=0
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [[ $remote_ref != refs/heads/"$prefix"* ]]; then
+    occ_log "push to $remote_ref refused: only refs/heads/$prefix* may be pushed from this container"
+    status=1
+  fi
+done
+exit $status

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Mints GitHub App installation tokens for the GHES instance.
+#
+#   ghapp-token <read|write> <owner>      print an installation token
+#   ghapp-token --jwt <read|write>        print a short-lived app JWT
+#   ghapp-token --invalidate <owner>      drop cached tokens for an owner
+#
+# The installation is looked up per owner (org or user), so any account the
+# app is installed on works without configuration. Tokens are cached under
+# $OCC_RUNTIME_DIR/tokens until five minutes before they expire.
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. /opt/occ/lib/common.sh
+
+cache_dir=$OCC_RUNTIME_DIR/tokens
+install -d -m 700 "$cache_dir"
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+jwt() {
+  local role=$1 app_id key now header payload sig
+  app_id=$(occ_app_id "$role")
+  key=$(occ_app_key "$role")
+  [[ -n $app_id ]] || occ_die "GHAPP_${role^^}_ID is not set"
+  [[ -r $key ]] || occ_die "private key for the $role app not readable at $key"
+  now=$(date +%s)
+  header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+  payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$app_id" | b64url)
+  sig=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$key" -binary | b64url)
+  printf '%s.%s.%s' "$header" "$payload" "$sig"
+}
+
+# api <jwt> <method> <path> - prints the response body, fails on HTTP errors.
+api() {
+  curl -sS --fail-with-body --retry 2 -X "$2" \
+    -H "Authorization: Bearer $1" \
+    -H "Accept: application/vnd.github+json" \
+    "$(occ_api_url)$3"
+}
+
+installation_id() {
+  local role=$1 owner=$2 token=$3 file id
+  file=$cache_dir/$role-$owner.installation
+  if [[ -s $file ]]; then cat "$file"; return; fi
+  id=$(api "$token" GET "/orgs/$owner/installation" 2>/dev/null | jq -r '.id // empty' || true)
+  if [[ -z $id ]]; then
+    id=$(api "$token" GET "/users/$owner/installation" 2>/dev/null | jq -r '.id // empty' || true)
+  fi
+  [[ -n $id ]] || occ_die "the $role app is not installed for '$owner' on $GHES_HOST"
+  printf '%s' "$id" > "$file"
+  printf '%s' "$id"
+}
+
+token() {
+  local role=$1 owner=${2,,} file now expires app_jwt id body
+  [[ $role == read || $role == write ]] || occ_die "unknown app role '$role'"
+  [[ -n $owner ]] || occ_die "owner is required"
+  file=$cache_dir/$role-$owner.json
+  exec 9> "$file.lock"
+  flock 9
+  now=$(date +%s)
+  if [[ -s $file ]]; then
+    expires=$(jq -r '.expires_at' "$file")
+    if (( $(date -d "$expires" +%s) - now > 300 )); then
+      jq -r '.token' "$file"
+      return
+    fi
+  fi
+  app_jwt=$(jwt "$role")
+  id=$(installation_id "$role" "$owner" "$app_jwt")
+  body=$(api "$app_jwt" POST "/app/installations/$id/access_tokens") \
+    || occ_die "creating a $role token for '$owner' failed: $body"
+  (umask 077 && jq '{token, expires_at}' <<<"$body" > "$file")
+  jq -r '.token' "$file"
+}
+
+case ${1:-} in
+  --jwt) jwt "${2:?role required}" ;;
+  --invalidate) rm -f "$cache_dir"/*-"${2,,}".json ;;
+  read | write) token "$1" "${2:-}" ;;
+  *) sed -n '2,10s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+esac
